@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Finger → Skull Regression</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  </head>
+  <body>
+    <main class="container">
+      <h1>Finger → Skull Regression (Simple Linear)</h1>
+
+      <section class="grid">
+        <div class="card">
+          <h2>1) Input</h2>
+
+          <label class="label">Finger values (X) — comma/space/newline separated</label>
+          <textarea id="fingerValues" rows="5"></textarea>
+
+          <label class="label">Skull values (Y) — comma/space/newline separated</label>
+          <textarea id="skullValues" rows="5"></textarea>
+
+          <div class="row">
+            <div>
+              <label class="label">Predict at X =</label>
+              <input id="predictionAt" type="number" step="any" value="8.7" />
+            </div>
+            <div>
+              <label class="label">Confidence level</label>
+              <select id="confidence">
+                <option value="0.90">90%</option>
+                <option value="0.95" selected>95%</option>
+                <option value="0.99">99%</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="row wrap">
+            <button id="btnCompute">Compute</button>
+            <button id="btnLoadSample" class="secondary">Load sample</button>
+            <button id="btnClear" class="secondary">Clear</button>
+          </div>
+
+          <p id="inputError" class="error" hidden></p>
+        </div>
+
+        <div class="card">
+          <h2>2) Upload screenshot (OCR)</h2>
+          <p class="muted">Upload a screenshot like your table; the app will try to extract rows: <code>id finger skull</code>.</p>
+
+          <input id="imageInput" type="file" accept="image/*" />
+          <div class="row wrap">
+            <button id="btnOCR" class="secondary" disabled>Run OCR → Fill values</button>
+            <span id="ocrStatus" class="muted"></span>
+          </div>
+
+          <div class="preview" id="preview" hidden>
+            <img id="previewImg" alt="preview" />
+            <canvas id="workCanvas" hidden></canvas>
+          </div>
+
+          <details>
+            <summary>Show OCR text (debug)</summary>
+            <textarea id="ocrText" rows="6" placeholder="OCR text will appear here..."></textarea>
+          </details>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>3) Results (menu)</h2>
+        <div id="resultsEmpty" class="muted">Compute to see results.</div>
+        <div id="results" hidden>
+          <div class="menu">
+            <details open>
+              <summary>Data summary</summary>
+              <pre id="outSummary"></pre>
+            </details>
+            <details>
+              <summary>Totals & cross-products</summary>
+              <pre id="outTotals"></pre>
+            </details>
+            <details>
+              <summary>Sxx, Syy, Sxy</summary>
+              <pre id="outS"></pre>
+            </details>
+            <details>
+              <summary>Fitted model</summary>
+              <pre id="outModel"></pre>
+            </details>
+            <details>
+              <summary>Prediction & confidence interval</summary>
+              <pre id="outPrediction"></pre>
+            </details>
+            <details>
+              <summary>Slope test & R²</summary>
+              <pre id="outInference"></pre>
+            </details>
+            <details open>
+              <summary>Graph (scatter + fitted line)</summary>
+              <div class="plotWrap">
+                <canvas id="plot" width="980" height="420"></canvas>
+              </div>
+              <div class="muted" style="margin-top:8px;font-size:12px">
+                Points = (finger, skull), line = fitted model, red marker = prediction at X.
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <footer class="muted">
+        Everything runs in your browser (no server). OCR uses Tesseract.js.
+      </footer>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
