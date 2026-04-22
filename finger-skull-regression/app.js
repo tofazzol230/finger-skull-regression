@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 const sample = {
   finger: [
-    8.1, 7.9, 8.2, 8.1, 8.4, 7.9, 7.7, 8.2, 7.9, 7.9,
+    9.1, 7.9, 8.2, 8.1, 8.4, 7.9, 7.7, 8.2, 7.9, 7.9,
     7.8, 8.3, 8.1, 8.1, 8.2, 8.0, 7.7, 7.9, 8.6, 8.4,
   ],
   skull: [
@@ -47,22 +47,56 @@ function normalizeSkull(y) {
   return y;
 }
 
+function parseOCRFloat(s) {
+  const cleaned = String(s).replace(/[^0-9,.-]/g, "").replace(/,(?=\d)/g, ".");
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 function parseTableLikeOCR(text) {
-  // Parse triples: id finger skull. Handles lines like: "1 8.1 53.5 11 7.8 56.6"
+  // Parse triples: id finger skull. Handles lines like: "1 8.1 53.5 11 7.8 56.6" (dot or comma decimals).
   const triples = [];
   for (const line of text.split(/\r?\n/)) {
-    const matches = [...line.matchAll(/(?:^|\s)(\d{1,3})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)(?=\s|$)/g)];
+    const matches = [...line.matchAll(/(?:^|\s)(\d{1,3})\s+(\d+(?:[\.,]\d+)?)\s+(\d+(?:[\.,]\d+)?)(?=\s|$)/g)];
     for (const m of matches) {
       triples.push({
         id: Number(m[1]),
-        finger: normalizeFinger(Number(m[2])),
-        skull: normalizeSkull(Number(m[3])),
+        finger: normalizeFinger(parseOCRFloat(m[2])),
+        skull: normalizeSkull(parseOCRFloat(m[3])),
       });
     }
   }
   triples.sort((a, b) => a.id - b.id);
   const finger = triples.map((t) => t.finger).filter((n) => Number.isFinite(n));
   const skull = triples.map((t) => t.skull).filter((n) => Number.isFinite(n));
+  if (finger.length && finger.length === skull.length) return { finger, skull };
+  return null;
+}
+
+function parsePairsLikeOCR(text) {
+  // Fallback: parse pairs per line (finger skull), tolerates missing/garbled ids.
+  const finger = [];
+  const skull = [];
+  for (const line of text.split(/\r?\n/)) {
+    const nums = (line.match(/-?\d+(?:[\.,]\d+)?/g) || []).map(parseOCRFloat).filter(Number.isFinite);
+    if (nums.length < 2) continue;
+
+    if (nums.length % 3 === 0 && nums.length >= 3) {
+      for (let i = 0; i + 2 < nums.length; i += 3) {
+        finger.push(normalizeFinger(nums[i + 1]));
+        skull.push(normalizeSkull(nums[i + 2]));
+      }
+      continue;
+    }
+
+    let start = 0;
+    if (nums.length % 2 === 1) start = 1; // drop likely id
+    for (let i = start; i + 1 < nums.length; i += 2) {
+      finger.push(normalizeFinger(nums[i]));
+      skull.push(normalizeSkull(nums[i + 1]));
+    }
+  }
+
   if (finger.length && finger.length === skull.length) return { finger, skull };
   return null;
 }
@@ -410,7 +444,7 @@ async function runOCR(file) {
 function maybeAutofillFromText(text) {
   const fromSnippet = tryParseFromRawSnippet(text);
   if (fromSnippet) return fromSnippet;
-  return parseTableLikeOCR(text);
+  return parseTableLikeOCR(text) || parsePairsLikeOCR(text);
 }
 
 function wire() {
