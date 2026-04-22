@@ -47,28 +47,102 @@ function normalizeSkull(y) {
   return y;
 }
 
+function fixOCRDigits(s) {
+  // Common OCR confusions for digits in screenshots.
+  return String(s)
+    .replace(/[Tt]/g, "7")
+    .replace(/[Ss]/g, "5")
+    .replace(/[Oo]/g, "0")
+    .replace(/[Il]/g, "1")
+    .replace(/B/g, "8")
+    .replace(/Z/g, "2");
+}
+
 function parseOCRFloat(s) {
-  const cleaned = String(s).replace(/[^0-9,.-]/g, "").replace(/,(?=\d)/g, ".");
+  const cleaned = fixOCRDigits(s).replace(/[^0-9,.-]/g, "").replace(/,(?=\d)/g, ".");
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : NaN;
 }
 
 function parseTableLikeOCR(text) {
-  // Parse triples: id finger skull. Handles lines like: "1 8.1 53.5 11 7.8 56.6" (dot or comma decimals).
+  // More tolerant parser for OCR output. Handles:
+  // - two rows per line
+  // - comma decimals
+  // - squashed tokens like "482 588" => id=4, finger=82, skull=588
+  // - OCR letters in numbers like "T9" => "79"
   const triples = [];
+
   for (const line of text.split(/\r?\n/)) {
-    const matches = [...line.matchAll(/(?:^|\s)(\d{1,3})\s+(\d+(?:[\.,]\d+)?)\s+(\d+(?:[\.,]\d+)?)(?=\s|$)/g)];
-    for (const m of matches) {
-      triples.push({
-        id: Number(m[1]),
-        finger: normalizeFinger(parseOCRFloat(m[2])),
-        skull: normalizeSkull(parseOCRFloat(m[3])),
-      });
+    const tokens = (line.match(/[A-Za-z]*-?\d+(?:[\.,]\d+)?/g) || []).map(fixOCRDigits);
+    if (!tokens.length) continue;
+
+    let i = 0;
+    while (i < tokens.length) {
+      const t0 = tokens[i];
+
+      // Heuristic: "482 588" means id=4, finger=82, skull=588.
+      if (/^\d{3}$/.test(t0) && i + 1 < tokens.length) {
+        const id = Number(t0[0]);
+        const fingerRaw = Number(t0.slice(1));
+        const skullRaw = parseOCRFloat(tokens[i + 1]);
+
+        const finger = normalizeFinger(fingerRaw);
+        const skull = normalizeSkull(skullRaw);
+
+        if (
+          Number.isFinite(id) &&
+          Number.isFinite(finger) &&
+          Number.isFinite(skull) &&
+          finger >= 1 &&
+          finger <= 30 &&
+          skull >= 20 &&
+          skull <= 500
+        ) {
+          triples.push({ id, finger, skull });
+          i += 2;
+          continue;
+        }
+      }
+
+      if (i + 2 < tokens.length) {
+        const idRaw = parseOCRFloat(t0);
+        const id = Number.isFinite(idRaw) ? Math.trunc(idRaw) : NaN;
+
+        if (Number.isFinite(id) && idRaw === id) {
+          const finger = normalizeFinger(parseOCRFloat(tokens[i + 1]));
+          const skull = normalizeSkull(parseOCRFloat(tokens[i + 2]));
+
+          if (
+            Number.isFinite(finger) &&
+            Number.isFinite(skull) &&
+            finger >= 1 &&
+            finger <= 30 &&
+            skull >= 20 &&
+            skull <= 500
+          ) {
+            triples.push({ id, finger, skull });
+            i += 3;
+            continue;
+          }
+        }
+      }
+
+      i += 1;
     }
   }
+
   triples.sort((a, b) => a.id - b.id);
-  const finger = triples.map((t) => t.finger).filter((n) => Number.isFinite(n));
-  const skull = triples.map((t) => t.skull).filter((n) => Number.isFinite(n));
+
+  const seen = new Set();
+  const ordered = [];
+  for (const t of triples) {
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    ordered.push(t);
+  }
+
+  const finger = ordered.map((t) => t.finger).filter((n) => Number.isFinite(n));
+  const skull = ordered.map((t) => t.skull).filter((n) => Number.isFinite(n));
   if (finger.length && finger.length === skull.length) return { finger, skull };
   return null;
 }
@@ -78,7 +152,7 @@ function parsePairsLikeOCR(text) {
   const finger = [];
   const skull = [];
   for (const line of text.split(/\r?\n/)) {
-    const nums = (line.match(/-?\d+(?:[\.,]\d+)?/g) || []).map(parseOCRFloat).filter(Number.isFinite);
+    const nums = (line.match(/[A-Za-z]*-?\d+(?:[\.,]\d+)?/g) || []).map(parseOCRFloat).filter(Number.isFinite);
     if (nums.length < 2) continue;
 
     if (nums.length % 3 === 0 && nums.length >= 3) {
