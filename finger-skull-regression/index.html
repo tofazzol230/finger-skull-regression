@@ -3,22 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Finger &rarr; Skull Regression</title>
+    <title>X &rarr; Y Regression</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
 
   <body>
     <main class="container">
-      <h1>Finger &rarr; Skull Regression (Simple Linear)</h1>
+      <h1>X &rarr; Y Regression (Simple Linear)</h1>
 
       <section class="grid">
         <div class="card">
           <h2>1) Input</h2>
 
-          <label class="label">Finger values (X) &mdash; comma/space/newline separated</label>
+          <label class="label">Independent values (X) &mdash; comma/space/newline separated</label>
           <textarea id="fingerValues" rows="5"></textarea>
 
-          <label class="label">Skull values (Y) &mdash; comma/space/newline separated</label>
+          <label class="label">Dependent values (Y) &mdash; comma/space/newline separated</label>
           <textarea id="skullValues" rows="5"></textarea>
 
           <div class="row">
@@ -91,7 +91,7 @@
               </div>
 
               <div class="muted" style="margin-top: 8px; font-size: 12px">
-                Points = (finger, skull), line = fitted model, red marker = prediction at X.
+                Points = (x, y), line = fitted model, red marker = prediction at X.
               </div>
             </details>
           </div>
