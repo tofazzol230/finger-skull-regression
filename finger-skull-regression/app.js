@@ -564,6 +564,48 @@ async function preprocessToCanvas(file) {
   return canvas;
 }
 
+function cropToContent(srcCanvas) {
+  const ctx = srcCanvas.getContext("2d", { willReadFrequently: true });
+  const { width: W, height: H } = srcCanvas;
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data;
+
+  let minX = W,
+    minY = H,
+    maxX = -1,
+    maxY = -1;
+
+  // Find non-white-ish pixels (fast scan).
+  for (let y = 0; y < H; y += 2) {
+    for (let x = 0; x < W; x += 2) {
+      const i = (y * W + x) * 4;
+      const r = d[i],
+        g = d[i + 1],
+        b = d[i + 2];
+      if (r + g + b < 740) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < 0) return srcCanvas;
+
+  const pad = 12;
+  minX = Math.max(0, minX - pad);
+  minY = Math.max(0, minY - pad);
+  maxX = Math.min(W - 1, maxX + pad);
+  maxY = Math.min(H - 1, maxY + pad);
+
+  const out = document.createElement("canvas");
+  out.width = maxX - minX + 1;
+  out.height = maxY - minY + 1;
+  out.getContext("2d").drawImage(srcCanvas, minX, minY, out.width, out.height, 0, 0, out.width, out.height);
+  return out;
+}
+
 function makeHighContrastBWCanvas(srcCanvas) {
   const canvas = document.createElement("canvas");
   canvas.width = srcCanvas.width;
@@ -580,7 +622,7 @@ function makeHighContrastBWCanvas(srcCanvas) {
     sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
   }
   const avg = sum / (data.length / 4);
-  const thr = Math.min(200, Math.max(120, avg * 0.9));
+  const thr = Math.min(215, Math.max(105, avg * 0.88));
 
   for (let i = 0; i < data.length; i += 4) {
     let v = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
@@ -589,7 +631,7 @@ function makeHighContrastBWCanvas(srcCanvas) {
   }
   ctx.putImageData(imgData, 0, 0);
 
-  return canvas;
+  return cropToContent(canvas);
 }
 
 function scoreOCRText(text) {
@@ -608,10 +650,8 @@ async function recognizeCanvas(canvas, label) {
   return data.text || "";
 }
 
-async function runOCR(file) {
-  if (!window.Tesseract) throw new Error("Tesseract.js not loaded.");
-
-  const base = await preprocessToCanvas(file);
+async function runOCRImage(file) {
+  const base = cropToContent(await preprocessToCanvas(file));
   const textRaw = await recognizeCanvas(base, "OCR (raw)");
   if (maybeAutofillFromText(textRaw)) return textRaw;
 
@@ -619,6 +659,54 @@ async function runOCR(file) {
   const textBW = await recognizeCanvas(bw, "OCR (contrast)");
 
   return scoreOCRText(textBW) > scoreOCRText(textRaw) ? textBW : textRaw;
+}
+
+async function renderPdfPageToCanvas(pdf, pageNum) {
+  const page = await pdf.getPage(pageNum);
+  const viewport = page.getViewport({ scale: 2.2 });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  return cropToContent(canvas);
+}
+
+async function runOCRPDF(file) {
+  const pdfjsLib = window.pdfjsLib;
+  if (!pdfjsLib) throw new Error("pdf.js not loaded.");
+
+  // Worker CDN for pdfjs
+  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js";
+  }
+
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+
+  let out = "";
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const canvas = await renderPdfPageToCanvas(pdf, p);
+
+    const raw = await recognizeCanvas(canvas, `PDF p${p}/${pdf.numPages} raw`);
+    out += `\n${raw}`;
+
+    if (maybeAutofillFromText(out)) continue;
+
+    const bw = makeHighContrastBWCanvas(canvas);
+    const bwText = await recognizeCanvas(bw, `PDF p${p}/${pdf.numPages} contrast`);
+    out += `\n${bwText}`;
+  }
+
+  return out;
+}
+
+async function runOCR(file) {
+  if (!window.Tesseract) throw new Error("Tesseract.js not loaded.");
+  const isPdf = file?.type === "application/pdf" || /\.pdf$/i.test(file?.name || "");
+  return isPdf ? runOCRPDF(file) : runOCRImage(file);
 }
 
 function maybeAutofillFromText(text) {
@@ -675,6 +763,13 @@ function wire() {
       return;
     }
 
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
+    if (isPdf) {
+      $("preview").hidden = true;
+      $("ocrStatus").textContent = `Selected PDF: ${file.name}`;
+      return;
+    }
+
     $("preview").hidden = false;
     $("previewImg").src = URL.createObjectURL(file);
   };
@@ -690,7 +785,7 @@ function wire() {
       const text = await runOCR(file);
       $("ocrText").value = text;
 
-      const parsed = maybeAutofillFromText(text);
+      const parsed = bestParseFromText(text);
       if (!parsed) throw new Error("Could not confidently parse finger/skull values from OCR text.");
 
       $("fingerValues").value = formatList(parsed.finger);
