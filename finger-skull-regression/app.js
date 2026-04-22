@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 const sample = {
   finger: [
-    8.1, 7.9, 8.2, 8.1, 8.4, 7.9, 7.7, 8.2, 7.9, 7.9,
+    9.1, 7.9, 8.2, 8.1, 8.4, 7.9, 7.7, 8.2, 7.9, 7.9,
     7.8, 8.3, 8.1, 8.1, 8.2, 8.0, 7.7, 7.9, 8.6, 8.4,
   ],
   skull: [
@@ -45,26 +45,6 @@ function normalizeSkull(y) {
   if (y >= 1000) return y / 100;
   if (y >= 200) return y / 10;
   return y;
-}
-
-function parseTableLikeOCR(text) {
-  // Parse triples: id finger skull. Handles lines like: "1 8.1 53.5 11 7.8 56.6"
-  const triples = [];
-  for (const line of text.split(/\r?\n/)) {
-    const matches = [...line.matchAll(/(?:^|\s)(\d{1,3})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)(?=\s|$)/g)];
-    for (const m of matches) {
-      triples.push({
-        id: Number(m[1]),
-        finger: normalizeFinger(Number(m[2])),
-        skull: normalizeSkull(Number(m[3])),
-      });
-    }
-  }
-  triples.sort((a, b) => a.id - b.id);
-  const finger = triples.map((t) => t.finger).filter((n) => Number.isFinite(n));
-  const skull = triples.map((t) => t.skull).filter((n) => Number.isFinite(n));
-  if (finger.length && finger.length === skull.length) return { finger, skull };
-  return null;
 }
 
 function tCriticalApprox(confidence, df) {
@@ -359,60 +339,6 @@ function loadSample() {
   $("predictionAt").value = "8.7";
 }
 
-async function preprocessToCanvas(file) {
-  const img = new Image();
-  img.src = URL.createObjectURL(file);
-  await img.decode();
-
-  const canvas = $("workCanvas");
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
-  const maxW = 1400;
-  const scale = Math.min(1, maxW / img.width);
-  canvas.width = Math.floor(img.width * scale);
-  canvas.height = Math.floor(img.height * scale);
-
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-  // Simple high-contrast grayscale (helps with screenshots of tables).
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imgData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i],
-      g = data[i + 1],
-      b = data[i + 2];
-    let v = 0.299 * r + 0.587 * g + 0.114 * b;
-    // contrast/threshold
-    v = v > 180 ? 255 : 0;
-    data[i] = data[i + 1] = data[i + 2] = v;
-  }
-  ctx.putImageData(imgData, 0, 0);
-
-  return canvas;
-}
-
-async function runOCR(file) {
-  if (!window.Tesseract) throw new Error("Tesseract.js not loaded.");
-  const canvas = await preprocessToCanvas(file);
-
-  const { data } = await window.Tesseract.recognize(canvas, "eng", {
-    logger: (m) => {
-      if (m.status) {
-        const pct = m.progress != null ? ` ${(m.progress * 100).toFixed(0)}%` : "";
-        $("ocrStatus").textContent = `${m.status}${pct}`;
-      }
-    },
-  });
-
-  return data.text || "";
-}
-
-function maybeAutofillFromText(text) {
-  const fromSnippet = tryParseFromRawSnippet(text);
-  if (fromSnippet) return fromSnippet;
-  return parseTableLikeOCR(text);
-}
-
 function wire() {
   loadSample();
 
@@ -452,46 +378,7 @@ function wire() {
     }
   };
 
-  $("imageInput").onchange = (e) => {
-    const file = e.target.files?.[0];
-    $("btnOCR").disabled = !file;
-    $("ocrStatus").textContent = "";
-    $("ocrText").value = "";
 
-    if (!file) {
-      $("preview").hidden = true;
-      return;
-    }
-
-    $("preview").hidden = false;
-    $("previewImg").src = URL.createObjectURL(file);
-  };
-
-  $("btnOCR").onclick = async () => {
-    const file = $("imageInput").files?.[0];
-    if (!file) return;
-
-    $("btnOCR").disabled = true;
-    $("ocrStatus").textContent = "Starting OCR...";
-
-    try {
-      const text = await runOCR(file);
-      $("ocrText").value = text;
-
-      const parsed = maybeAutofillFromText(text);
-      if (!parsed) throw new Error("Could not confidently parse finger/skull values from OCR text.");
-
-      $("fingerValues").value = formatList(parsed.finger);
-      $("skullValues").value = formatList(parsed.skull);
-
-      $("ocrStatus").textContent = `Extracted ${parsed.finger.length} rows.`;
-    } catch (e) {
-      $("ocrStatus").textContent = "";
-      setError(e?.message || String(e));
-    } finally {
-      $("btnOCR").disabled = false;
-    }
-  };
 }
 
 wire();
