@@ -64,12 +64,13 @@ function parseOCRFloat(s) {
   return Number.isFinite(n) ? n : NaN;
 }
 
-function parseTableLikeOCR(text) {
+function parseTableLikeOCR(text, swap = false) {
   // More tolerant parser for OCR output. Handles:
   // - two rows per line
   // - comma decimals
   // - squashed tokens like "482 588" => id=4, finger=82, skull=588
   // - OCR letters in numbers like "T9" => "79"
+  // swap=true means table is: id skull finger (columns swapped)
   const triples = [];
 
   for (const line of text.split(/\r?\n/)) {
@@ -81,7 +82,7 @@ function parseTableLikeOCR(text) {
       const t0 = tokens[i];
 
       // Heuristic: "482 588" means id=4, finger=82, skull=588.
-      if (/^\d{3}$/.test(t0) && i + 1 < tokens.length) {
+      if (!swap && /^\d{3}$/.test(t0) && i + 1 < tokens.length) {
         const id = Number(t0[0]);
         const fingerRaw = Number(t0.slice(1));
         const skullRaw = parseOCRFloat(tokens[i + 1]);
@@ -109,8 +110,11 @@ function parseTableLikeOCR(text) {
         const id = Number.isFinite(idRaw) ? Math.trunc(idRaw) : NaN;
 
         if (Number.isFinite(id) && idRaw === id) {
-          const finger = normalizeFinger(parseOCRFloat(tokens[i + 1]));
-          const skull = normalizeSkull(parseOCRFloat(tokens[i + 2]));
+          const a = parseOCRFloat(tokens[i + 1]);
+          const b = parseOCRFloat(tokens[i + 2]);
+
+          const finger = normalizeFinger(swap ? b : a);
+          const skull = normalizeSkull(swap ? a : b);
 
           if (
             Number.isFinite(finger) &&
@@ -147,31 +151,107 @@ function parseTableLikeOCR(text) {
   return null;
 }
 
-function parsePairsLikeOCR(text) {
-  // Fallback: parse pairs per line (finger skull), tolerates missing/garbled ids.
+function parsePairsLikeOCR(text, swap = false) {
+  // Fallback: parse pairs per line (finger skull). swap=true means each pair is skull finger.
   const finger = [];
   const skull = [];
   for (const line of text.split(/\r?\n/)) {
     const nums = (line.match(/[A-Za-z]*-?\d+(?:[\.,]\d+)?/g) || []).map(parseOCRFloat).filter(Number.isFinite);
     if (nums.length < 2) continue;
 
-    if (nums.length % 3 === 0 && nums.length >= 3) {
-      for (let i = 0; i + 2 < nums.length; i += 3) {
-        finger.push(normalizeFinger(nums[i + 1]));
-        skull.push(normalizeSkull(nums[i + 2]));
+    // If line looks like: id + pairs..., drop the first.
+    if (nums.length >= 3 && nums.length % 2 === 1) {
+      for (let i = 1; i + 1 < nums.length; i += 2) {
+        const a = nums[i];
+        const b = nums[i + 1];
+        finger.push(normalizeFinger(swap ? b : a));
+        skull.push(normalizeSkull(swap ? a : b));
       }
       continue;
     }
 
-    let start = 0;
-    if (nums.length % 2 === 1) start = 1; // drop likely id
-    for (let i = start; i + 1 < nums.length; i += 2) {
-      finger.push(normalizeFinger(nums[i]));
-      skull.push(normalizeSkull(nums[i + 1]));
+    if (nums.length % 3 === 0 && nums.length >= 3) {
+      for (let i = 0; i + 2 < nums.length; i += 3) {
+        const a = nums[i + 1];
+        const b = nums[i + 2];
+        finger.push(normalizeFinger(swap ? b : a));
+        skull.push(normalizeSkull(swap ? a : b));
+      }
+      continue;
+    }
+
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      const a = nums[i];
+      const b = nums[i + 1];
+      finger.push(normalizeFinger(swap ? b : a));
+      skull.push(normalizeSkull(swap ? a : b));
     }
   }
 
   if (finger.length && finger.length === skull.length) return { finger, skull };
+  return null;
+}
+
+function scoreParsed(p) {
+  if (!p || !Array.isArray(p.finger) || !Array.isArray(p.skull)) return -Infinity;
+  if (!p.finger.length || p.finger.length !== p.skull.length) return -Infinity;
+
+  let score = p.finger.length * 10;
+  let good = 0;
+  let bad = 0;
+
+  for (let i = 0; i < p.finger.length; i++) {
+    const x = p.finger[i];
+    const y = p.skull[i];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      bad++;
+      continue;
+    }
+
+    // broad plausibility windows after normalization
+    const okX = x > 0.2 && x < 50;
+    const okY = y > 1 && y < 1000;
+    const likelyX = x >= 1 && x <= 30;
+    const likelyY = y >= 20 && y <= 500;
+
+    if (okX && okY) good++;
+    if (likelyX) score += 2;
+    if (likelyY) score += 2;
+    if (!okX) score -= 4;
+    if (!okY) score -= 4;
+  }
+
+  score += good * 2 - bad * 6;
+  return score;
+}
+
+function bestParseFromText(text) {
+  const candidates = [];
+
+  const fromSnippet = tryParseFromRawSnippet(text);
+  if (fromSnippet) candidates.push(fromSnippet);
+
+  const t1 = parseTableLikeOCR(text, false);
+  if (t1) candidates.push(t1);
+  const t2 = parseTableLikeOCR(text, true);
+  if (t2) candidates.push(t2);
+
+  const p1 = parsePairsLikeOCR(text, false);
+  if (p1) candidates.push(p1);
+  const p2 = parsePairsLikeOCR(text, true);
+  if (p2) candidates.push(p2);
+
+  let best = null;
+  let bestScore = -Infinity;
+  for (const c of candidates) {
+    const s = scoreParsed(c);
+    if (s > bestScore) {
+      bestScore = s;
+      best = c;
+    }
+  }
+
+  if (best && bestScore > 25) return best; // require a minimum confidence
   return null;
 }
 
@@ -542,9 +622,7 @@ async function runOCR(file) {
 }
 
 function maybeAutofillFromText(text) {
-  const fromSnippet = tryParseFromRawSnippet(text);
-  if (fromSnippet) return fromSnippet;
-  return parseTableLikeOCR(text) || parsePairsLikeOCR(text);
+  return bestParseFromText(text);
 }
 
 function wire() {
