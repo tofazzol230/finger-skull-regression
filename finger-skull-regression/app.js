@@ -2,7 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 const sample = {
   finger: [
-    9.1, 7.9, 8.2, 8.1, 8.4, 7.9, 7.7, 8.2, 7.9, 7.9,
+    8.1, 7.9, 8.2, 8.1, 8.4, 7.9, 7.7, 8.2, 7.9, 7.9,
     7.8, 8.3, 8.1, 8.1, 8.2, 8.0, 7.7, 7.9, 8.6, 8.4,
   ],
   skull: [
@@ -47,211 +47,23 @@ function normalizeSkull(y) {
   return y;
 }
 
-function fixOCRDigits(s) {
-  // Common OCR confusions for digits in screenshots.
-  return String(s)
-    .replace(/[Tt]/g, "7")
-    .replace(/[Ss]/g, "5")
-    .replace(/[Oo]/g, "0")
-    .replace(/[Il]/g, "1")
-    .replace(/B/g, "8")
-    .replace(/Z/g, "2");
-}
-
-function parseOCRFloat(s) {
-  const cleaned = fixOCRDigits(s).replace(/[^0-9,.-]/g, "").replace(/,(?=\d)/g, ".");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : NaN;
-}
-
-function parseTableLikeOCR(text, swap = false) {
-  // More tolerant parser for OCR output. Handles:
-  // - two rows per line
-  // - comma decimals
-  // - squashed tokens like "482 588" => id=4, finger=82, skull=588
-  // - OCR letters in numbers like "T9" => "79"
-  // swap=true means table is: id skull finger (columns swapped)
+function parseTableLikeOCR(text) {
+  // Parse triples: id finger skull. Handles lines like: "1 8.1 53.5 11 7.8 56.6"
   const triples = [];
-
   for (const line of text.split(/\r?\n/)) {
-    const tokens = (line.match(/[A-Za-z]*-?\d+(?:[\.,]\d+)?/g) || []).map(fixOCRDigits);
-    if (!tokens.length) continue;
-
-    let i = 0;
-    while (i < tokens.length) {
-      const t0 = tokens[i];
-
-      // Heuristic: "482 588" means id=4, finger=82, skull=588.
-      if (!swap && /^\d{3}$/.test(t0) && i + 1 < tokens.length) {
-        const id = Number(t0[0]);
-        const fingerRaw = Number(t0.slice(1));
-        const skullRaw = parseOCRFloat(tokens[i + 1]);
-
-        const finger = normalizeFinger(fingerRaw);
-        const skull = normalizeSkull(skullRaw);
-
-        if (
-          Number.isFinite(id) &&
-          Number.isFinite(finger) &&
-          Number.isFinite(skull) &&
-          finger >= 1 &&
-          finger <= 30 &&
-          skull >= 20 &&
-          skull <= 500
-        ) {
-          triples.push({ id, finger, skull });
-          i += 2;
-          continue;
-        }
-      }
-
-      if (i + 2 < tokens.length) {
-        const idRaw = parseOCRFloat(t0);
-        const id = Number.isFinite(idRaw) ? Math.trunc(idRaw) : NaN;
-
-        if (Number.isFinite(id) && idRaw === id) {
-          const a = parseOCRFloat(tokens[i + 1]);
-          const b = parseOCRFloat(tokens[i + 2]);
-
-          const finger = normalizeFinger(swap ? b : a);
-          const skull = normalizeSkull(swap ? a : b);
-
-          if (
-            Number.isFinite(finger) &&
-            Number.isFinite(skull) &&
-            finger >= 1 &&
-            finger <= 30 &&
-            skull >= 20 &&
-            skull <= 500
-          ) {
-            triples.push({ id, finger, skull });
-            i += 3;
-            continue;
-          }
-        }
-      }
-
-      i += 1;
+    const matches = [...line.matchAll(/(?:^|\s)(\d{1,3})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)(?=\s|$)/g)];
+    for (const m of matches) {
+      triples.push({
+        id: Number(m[1]),
+        finger: normalizeFinger(Number(m[2])),
+        skull: normalizeSkull(Number(m[3])),
+      });
     }
   }
-
   triples.sort((a, b) => a.id - b.id);
-
-  const seen = new Set();
-  const ordered = [];
-  for (const t of triples) {
-    if (seen.has(t.id)) continue;
-    seen.add(t.id);
-    ordered.push(t);
-  }
-
-  const finger = ordered.map((t) => t.finger).filter((n) => Number.isFinite(n));
-  const skull = ordered.map((t) => t.skull).filter((n) => Number.isFinite(n));
+  const finger = triples.map((t) => t.finger).filter((n) => Number.isFinite(n));
+  const skull = triples.map((t) => t.skull).filter((n) => Number.isFinite(n));
   if (finger.length && finger.length === skull.length) return { finger, skull };
-  return null;
-}
-
-function parsePairsLikeOCR(text, swap = false) {
-  // Fallback: parse pairs per line (finger skull). swap=true means each pair is skull finger.
-  const finger = [];
-  const skull = [];
-  for (const line of text.split(/\r?\n/)) {
-    const nums = (line.match(/[A-Za-z]*-?\d+(?:[\.,]\d+)?/g) || []).map(parseOCRFloat).filter(Number.isFinite);
-    if (nums.length < 2) continue;
-
-    // If line looks like: id + pairs..., drop the first.
-    if (nums.length >= 3 && nums.length % 2 === 1) {
-      for (let i = 1; i + 1 < nums.length; i += 2) {
-        const a = nums[i];
-        const b = nums[i + 1];
-        finger.push(normalizeFinger(swap ? b : a));
-        skull.push(normalizeSkull(swap ? a : b));
-      }
-      continue;
-    }
-
-    if (nums.length % 3 === 0 && nums.length >= 3) {
-      for (let i = 0; i + 2 < nums.length; i += 3) {
-        const a = nums[i + 1];
-        const b = nums[i + 2];
-        finger.push(normalizeFinger(swap ? b : a));
-        skull.push(normalizeSkull(swap ? a : b));
-      }
-      continue;
-    }
-
-    for (let i = 0; i + 1 < nums.length; i += 2) {
-      const a = nums[i];
-      const b = nums[i + 1];
-      finger.push(normalizeFinger(swap ? b : a));
-      skull.push(normalizeSkull(swap ? a : b));
-    }
-  }
-
-  if (finger.length && finger.length === skull.length) return { finger, skull };
-  return null;
-}
-
-function scoreParsed(p) {
-  if (!p || !Array.isArray(p.finger) || !Array.isArray(p.skull)) return -Infinity;
-  if (!p.finger.length || p.finger.length !== p.skull.length) return -Infinity;
-
-  let score = p.finger.length * 10;
-  let good = 0;
-  let bad = 0;
-
-  for (let i = 0; i < p.finger.length; i++) {
-    const x = p.finger[i];
-    const y = p.skull[i];
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      bad++;
-      continue;
-    }
-
-    // broad plausibility windows after normalization
-    const okX = x > 0.2 && x < 50;
-    const okY = y > 1 && y < 1000;
-    const likelyX = x >= 1 && x <= 30;
-    const likelyY = y >= 20 && y <= 500;
-
-    if (okX && okY) good++;
-    if (likelyX) score += 2;
-    if (likelyY) score += 2;
-    if (!okX) score -= 4;
-    if (!okY) score -= 4;
-  }
-
-  score += good * 2 - bad * 6;
-  return score;
-}
-
-function bestParseFromText(text) {
-  const candidates = [];
-
-  const fromSnippet = tryParseFromRawSnippet(text);
-  if (fromSnippet) candidates.push(fromSnippet);
-
-  const t1 = parseTableLikeOCR(text, false);
-  if (t1) candidates.push(t1);
-  const t2 = parseTableLikeOCR(text, true);
-  if (t2) candidates.push(t2);
-
-  const p1 = parsePairsLikeOCR(text, false);
-  if (p1) candidates.push(p1);
-  const p2 = parsePairsLikeOCR(text, true);
-  if (p2) candidates.push(p2);
-
-  let best = null;
-  let bestScore = -Infinity;
-  for (const c of candidates) {
-    const s = scoreParsed(c);
-    if (s > bestScore) {
-      bestScore = s;
-      best = c;
-    }
-  }
-
-  if (best && bestScore > 25) return best; // require a minimum confidence
   return null;
 }
 
@@ -561,156 +373,44 @@ async function preprocessToCanvas(file) {
   canvas.height = Math.floor(img.height * scale);
 
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  return canvas;
-}
 
-function cropToContent(srcCanvas) {
-  const ctx = srcCanvas.getContext("2d", { willReadFrequently: true });
-  const { width: W, height: H } = srcCanvas;
-  const img = ctx.getImageData(0, 0, W, H);
-  const d = img.data;
-
-  let minX = W,
-    minY = H,
-    maxX = -1,
-    maxY = -1;
-
-  // Find non-white-ish pixels (fast scan).
-  for (let y = 0; y < H; y += 2) {
-    for (let x = 0; x < W; x += 2) {
-      const i = (y * W + x) * 4;
-      const r = d[i],
-        g = d[i + 1],
-        b = d[i + 2];
-      if (r + g + b < 740) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-
-  if (maxX < 0) return srcCanvas;
-
-  const pad = 12;
-  minX = Math.max(0, minX - pad);
-  minY = Math.max(0, minY - pad);
-  maxX = Math.min(W - 1, maxX + pad);
-  maxY = Math.min(H - 1, maxY + pad);
-
-  const out = document.createElement("canvas");
-  out.width = maxX - minX + 1;
-  out.height = maxY - minY + 1;
-  out.getContext("2d").drawImage(srcCanvas, minX, minY, out.width, out.height, 0, 0, out.width, out.height);
-  return out;
-}
-
-function makeHighContrastBWCanvas(srcCanvas) {
-  const canvas = document.createElement("canvas");
-  canvas.width = srcCanvas.width;
-  canvas.height = srcCanvas.height;
-
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(srcCanvas, 0, 0);
-
+  // Simple high-contrast grayscale (helps with screenshots of tables).
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;
-
-  let sum = 0;
   for (let i = 0; i < data.length; i += 4) {
-    sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-  }
-  const avg = sum / (data.length / 4);
-  const thr = Math.min(215, Math.max(105, avg * 0.88));
-
-  for (let i = 0; i < data.length; i += 4) {
-    let v = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    v = v > thr ? 255 : 0;
+    const r = data[i],
+      g = data[i + 1],
+      b = data[i + 2];
+    let v = 0.299 * r + 0.587 * g + 0.114 * b;
+    // contrast/threshold
+    v = v > 180 ? 255 : 0;
     data[i] = data[i + 1] = data[i + 2] = v;
   }
   ctx.putImageData(imgData, 0, 0);
 
-  return cropToContent(canvas);
-}
-
-function scoreOCRText(text) {
-  return (text.match(/-?\d+(?:[\.,]\d+)?/g) || []).length;
-}
-
-async function recognizeCanvas(canvas, label) {
-  const { data } = await window.Tesseract.recognize(canvas, "eng", {
-    logger: (m) => {
-      if (m.status) {
-        const pct = m.progress != null ? ` ${(m.progress * 100).toFixed(0)}%` : "";
-        $("ocrStatus").textContent = `${label}: ${m.status}${pct}`;
-      }
-    },
-  });
-  return data.text || "";
-}
-
-async function runOCRImage(file) {
-  const base = cropToContent(await preprocessToCanvas(file));
-  const textRaw = await recognizeCanvas(base, "OCR (raw)");
-  if (maybeAutofillFromText(textRaw)) return textRaw;
-
-  const bw = makeHighContrastBWCanvas(base);
-  const textBW = await recognizeCanvas(bw, "OCR (contrast)");
-
-  return scoreOCRText(textBW) > scoreOCRText(textRaw) ? textBW : textRaw;
-}
-
-async function renderPdfPageToCanvas(pdf, pageNum) {
-  const page = await pdf.getPage(pageNum);
-  const viewport = page.getViewport({ scale: 2.2 });
-
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.floor(viewport.width);
-  canvas.height = Math.floor(viewport.height);
-
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  await page.render({ canvasContext: ctx, viewport }).promise;
-  return cropToContent(canvas);
-}
-
-async function runOCRPDF(file) {
-  const pdfjsLib = window.pdfjsLib;
-  if (!pdfjsLib) throw new Error("pdf.js not loaded.");
-
-  // Worker CDN for pdfjs
-  if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js";
-  }
-
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-
-  let out = "";
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const canvas = await renderPdfPageToCanvas(pdf, p);
-
-    const raw = await recognizeCanvas(canvas, `PDF p${p}/${pdf.numPages} raw`);
-    out += `\n${raw}`;
-
-    if (maybeAutofillFromText(out)) continue;
-
-    const bw = makeHighContrastBWCanvas(canvas);
-    const bwText = await recognizeCanvas(bw, `PDF p${p}/${pdf.numPages} contrast`);
-    out += `\n${bwText}`;
-  }
-
-  return out;
+  return canvas;
 }
 
 async function runOCR(file) {
   if (!window.Tesseract) throw new Error("Tesseract.js not loaded.");
-  const isPdf = file?.type === "application/pdf" || /\.pdf$/i.test(file?.name || "");
-  return isPdf ? runOCRPDF(file) : runOCRImage(file);
+  const canvas = await preprocessToCanvas(file);
+
+  const { data } = await window.Tesseract.recognize(canvas, "eng", {
+    logger: (m) => {
+      if (m.status) {
+        const pct = m.progress != null ? ` ${(m.progress * 100).toFixed(0)}%` : "";
+        $("ocrStatus").textContent = `${m.status}${pct}`;
+      }
+    },
+  });
+
+  return data.text || "";
 }
 
 function maybeAutofillFromText(text) {
-  return bestParseFromText(text);
+  const fromSnippet = tryParseFromRawSnippet(text);
+  if (fromSnippet) return fromSnippet;
+  return parseTableLikeOCR(text);
 }
 
 function wire() {
@@ -763,13 +463,6 @@ function wire() {
       return;
     }
 
-    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name || "");
-    if (isPdf) {
-      $("preview").hidden = true;
-      $("ocrStatus").textContent = `Selected PDF: ${file.name}`;
-      return;
-    }
-
     $("preview").hidden = false;
     $("previewImg").src = URL.createObjectURL(file);
   };
@@ -785,7 +478,7 @@ function wire() {
       const text = await runOCR(file);
       $("ocrText").value = text;
 
-      const parsed = bestParseFromText(text);
+      const parsed = maybeAutofillFromText(text);
       if (!parsed) throw new Error("Could not confidently parse finger/skull values from OCR text.");
 
       $("fingerValues").value = formatList(parsed.finger);
