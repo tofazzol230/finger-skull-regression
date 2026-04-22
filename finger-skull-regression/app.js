@@ -407,17 +407,30 @@ async function preprocessToCanvas(file) {
   canvas.height = Math.floor(img.height * scale);
 
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
 
-  // Simple high-contrast grayscale (helps with screenshots of tables).
+function makeHighContrastBWCanvas(srcCanvas) {
+  const canvas = document.createElement("canvas");
+  canvas.width = srcCanvas.width;
+  canvas.height = srcCanvas.height;
+
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(srcCanvas, 0, 0);
+
   const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imgData.data;
+
+  let sum = 0;
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i],
-      g = data[i + 1],
-      b = data[i + 2];
-    let v = 0.299 * r + 0.587 * g + 0.114 * b;
-    // contrast/threshold
-    v = v > 180 ? 255 : 0;
+    sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+  }
+  const avg = sum / (data.length / 4);
+  const thr = Math.min(200, Math.max(120, avg * 0.9));
+
+  for (let i = 0; i < data.length; i += 4) {
+    let v = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    v = v > thr ? 255 : 0;
     data[i] = data[i + 1] = data[i + 2] = v;
   }
   ctx.putImageData(imgData, 0, 0);
@@ -425,20 +438,33 @@ async function preprocessToCanvas(file) {
   return canvas;
 }
 
-async function runOCR(file) {
-  if (!window.Tesseract) throw new Error("Tesseract.js not loaded.");
-  const canvas = await preprocessToCanvas(file);
+function scoreOCRText(text) {
+  return (text.match(/-?\d+(?:[\.,]\d+)?/g) || []).length;
+}
 
+async function recognizeCanvas(canvas, label) {
   const { data } = await window.Tesseract.recognize(canvas, "eng", {
     logger: (m) => {
       if (m.status) {
         const pct = m.progress != null ? ` ${(m.progress * 100).toFixed(0)}%` : "";
-        $("ocrStatus").textContent = `${m.status}${pct}`;
+        $("ocrStatus").textContent = `${label}: ${m.status}${pct}`;
       }
     },
   });
-
   return data.text || "";
+}
+
+async function runOCR(file) {
+  if (!window.Tesseract) throw new Error("Tesseract.js not loaded.");
+
+  const base = await preprocessToCanvas(file);
+  const textRaw = await recognizeCanvas(base, "OCR (raw)");
+  if (maybeAutofillFromText(textRaw)) return textRaw;
+
+  const bw = makeHighContrastBWCanvas(base);
+  const textBW = await recognizeCanvas(bw, "OCR (contrast)");
+
+  return scoreOCRText(textBW) > scoreOCRText(textRaw) ? textBW : textRaw;
 }
 
 function maybeAutofillFromText(text) {
